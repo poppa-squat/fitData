@@ -6,7 +6,6 @@
  * No DOM, no fetch, no Date.now() inside functions (pass dates in) — keeps everything testable.
  */
 import type {
-  Activity,
   ActivityLoad,
   ActivitySummary,
   AthleteSettings,
@@ -17,14 +16,12 @@ import type {
   Overlay,
   PerformancePoint,
   PreparedActivity,
-  PrepareOptions,
   Readiness,
   Relationship,
   RelationshipInput,
   RelationshipOptions,
   Segment,
   SegmentKind,
-  Smoothing,
   Suggestion,
   SuggestionContext,
   TimeWindow,
@@ -32,25 +29,12 @@ import type {
 } from './types.js';
 
 export * from './types.js';
+export { prepare } from './prepare.js';
+export { smooth } from './smooth.js';
 
 const notImplemented = (name: string): never => {
   throw new Error(`@pacelab/analytics: ${name} not implemented yet (Track B)`);
 };
-
-/** Resample to a uniform grid, mark pauses, add derived channels. Call once per activity; everything else takes the result. */
-export function prepare(activity: Activity, opts?: PrepareOptions): PreparedActivity {
-  void activity;
-  void opts;
-  return notImplemented('prepare');
-}
-
-/** Returns a new array; never mutates. Nulls stay null and do not poison neighbours. */
-export function smooth(values: (number | null)[], resampleS: number, smoothing: Smoothing): (number | null)[] {
-  void values;
-  void resampleS;
-  void smoothing;
-  return notImplemented('smooth');
-}
 
 /** Stats for every available channel (or just `channels`) inside the window. Must run in < 5 ms for a 2 h activity at 1 Hz. */
 export function windowStats(p: PreparedActivity, window: TimeWindow, settings: AthleteSettings, channels?: ChannelKey[]): WindowStats {
