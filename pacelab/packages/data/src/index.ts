@@ -5,8 +5,15 @@
  * against (docs/CONTRACTS.md §7.1). Track A replaces the stubs with real
  * implementations; changing a signature follows docs/CONTRACTS.md §8.
  */
-import type { Activity, IndexPayload, ProfileEntry } from '@pacelab/schema';
-import { RAW_CHANNEL_KEYS, type RawChannelKey } from '@pacelab/schema';
+import type {
+  Activity,
+  ActivitySummary,
+  DailyWellness,
+  IndexPayload,
+  KeyInfo,
+  ProfileEntry,
+} from '@pacelab/schema';
+import { activityFileName, RAW_CHANNEL_KEYS, SCHEMA_VERSION, type RawChannelKey } from '@pacelab/schema';
 import {
   Decoder,
   Stream,
@@ -17,8 +24,10 @@ import {
   type LengthMesg,
   type SessionMesg,
 } from '@garmin/fitsdk';
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 
 export * from './crypto.js';
+import { decryptJson, deriveKey } from './crypto.js';
 
 const notImplemented = (name: string): never => {
   throw new Error(`@pacelab/data: ${name} not implemented yet (Track A)`);
@@ -337,8 +346,26 @@ export class ActivityNotFoundError extends Error {
 
 /** Reads `${baseUrl}/data/profiles.json`. Returns [] if the file is missing (no sync set up yet). */
 export async function listRemoteProfiles(baseUrl: string): Promise<ProfileEntry[]> {
-  void baseUrl;
-  return notImplemented('listRemoteProfiles');
+  const response = await fetch(dataUrl(baseUrl, 'profiles.json'));
+  if (response.status === 404) return [];
+  if (!response.ok) throw new Error(`Could not list remote profiles (${response.status})`);
+
+  const file: unknown = await response.json();
+  if (!isRecord(file) || file.schemaVersion !== SCHEMA_VERSION || !Array.isArray(file.profiles)) {
+    throw new Error('Remote profiles file has an invalid shape');
+  }
+  const profiles: ProfileEntry[] = file.profiles.map((profile: unknown) => {
+    if (
+      !isRecord(profile) ||
+      typeof profile.id !== 'string' ||
+      !/^[a-z0-9-]+$/.test(profile.id) ||
+      typeof profile.displayName !== 'string'
+    ) {
+      throw new Error('Remote profiles file has an invalid profile entry');
+    }
+    return { id: profile.id, displayName: profile.displayName };
+  });
+  return profiles;
 }
 
 /**
@@ -346,10 +373,55 @@ export async function listRemoteProfiles(baseUrl: string): Promise<ProfileEntry[
  * WrongPassphraseError on a bad passphrase. Activities are fetched lazily and cached.
  */
 export async function openRemoteProfile(baseUrl: string, profileId: string, passphrase: string): Promise<ProfileDataSource> {
-  void baseUrl;
-  void profileId;
-  void passphrase;
-  return notImplemented('openRemoteProfile');
+  assertProfileId(profileId);
+  const [keyInfoResponse, indexResponse] = await Promise.all([
+    fetch(dataUrl(baseUrl, profileId, 'keyinfo.json')),
+    fetch(dataUrl(baseUrl, profileId, 'index.enc')),
+  ]);
+  if (!keyInfoResponse.ok) throw new Error(`Could not load profile key info (${keyInfoResponse.status})`);
+  if (!indexResponse.ok) throw new Error(`Could not load profile index (${indexResponse.status})`);
+
+  const keyInfo = parseKeyInfo(await keyInfoResponse.json());
+  const key = await deriveKey(passphrase, keyInfo);
+  const index = await decryptJson<IndexPayload>(key, new Uint8Array(await indexResponse.arrayBuffer()));
+  if (
+    !isRecord(index) ||
+    index.schemaVersion !== SCHEMA_VERSION ||
+    index.profileId !== profileId ||
+    !Array.isArray(index.activities) ||
+    !Array.isArray(index.wellness)
+  ) {
+    throw new Error(`Remote profile index for "${profileId}" has an invalid shape`);
+  }
+
+  const activityIds = new Set(index.activities.map((activity) => activity.id));
+  const activityCache = new Map<string, Promise<Activity>>();
+  return {
+    profileId,
+    async loadIndex() {
+      return index;
+    },
+    async loadActivity(id) {
+      if (!activityIds.has(id)) throw new ActivityNotFoundError(id);
+      let request = activityCache.get(id);
+      if (!request) {
+        request = (async () => {
+          const response = await fetch(dataUrl(baseUrl, profileId, 'activities', activityFileName(id)));
+          if (!response.ok) throw new Error(`Could not load activity "${id}" (${response.status})`);
+          const activity = await decryptJson<Activity>(key, new Uint8Array(await response.arrayBuffer()));
+          if (activity.id !== id) throw new Error(`Encrypted activity id mismatch: expected "${id}", got "${activity.id}"`);
+          return activity;
+        })();
+        activityCache.set(id, request);
+      }
+      try {
+        return await request;
+      } catch (error) {
+        activityCache.delete(id);
+        throw error;
+      }
+    },
+  };
 }
 
 /** Browser-only store (IndexedDB) for dropped files. profileId is always "local". */
@@ -361,7 +433,43 @@ export interface LocalStore extends ProfileDataSource {
 }
 
 export async function openLocalStore(): Promise<LocalStore> {
-  return notImplemented('openLocalStore');
+  const db = await getLocalDatabase();
+  return {
+    profileId: 'local',
+    async loadIndex() {
+      const activities = await db.getAll('activities');
+      return {
+        schemaVersion: SCHEMA_VERSION,
+        profileId: 'local',
+        generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        activities: activities.map(toActivitySummary).sort((a, b) => b.startTime.localeCompare(a.startTime)),
+        wellness: [],
+      };
+    },
+    async loadActivity(id) {
+      const activity = await db.get('activities', id);
+      if (!activity) throw new ActivityNotFoundError(id);
+      return activity;
+    },
+    async putActivity(activity) {
+      const transaction = db.transaction('activities', 'readwrite');
+      const store = transaction.objectStore('activities');
+      const existing = await store.getAll();
+      if (existing.some((other) => isDuplicateActivity(other, activity))) {
+        await transaction.done;
+        return 'duplicate';
+      }
+      await store.put(activity);
+      await transaction.done;
+      return 'added';
+    },
+    async deleteActivity(id) {
+      await db.delete('activities', id);
+    },
+    async clear() {
+      await db.clear('activities');
+    },
+  };
 }
 
 /**
@@ -370,7 +478,122 @@ export async function openLocalStore(): Promise<LocalStore> {
  * so pass API-backed sources first. Wellness is merged per date, earlier sources win per field.
  */
 export function mergeSources(profileId: string, ...sources: ProfileDataSource[]): ProfileDataSource {
-  void profileId;
-  void sources;
-  return notImplemented('mergeSources');
+  const snapshot = async (): Promise<{ index: IndexPayload; activitySources: Map<string, ProfileDataSource> }> => {
+    const indexes = await Promise.all(sources.map((source) => source.loadIndex()));
+    const activities: ActivitySummary[] = [];
+    const activitySources = new Map<string, ProfileDataSource>();
+    const wellnessByDate = new Map<string, DailyWellness>();
+
+    indexes.forEach((index, sourceIndex) => {
+      const source = sources[sourceIndex]!;
+      for (const activity of index.activities) {
+        if (activities.some((existing) => isDuplicateSummary(existing, activity))) continue;
+        activities.push(activity);
+        activitySources.set(activity.id, source);
+      }
+      for (const day of index.wellness) {
+        const existing = wellnessByDate.get(day.date);
+        if (!existing) {
+          wellnessByDate.set(day.date, { ...day });
+          continue;
+        }
+        for (const field of ['sleep', 'restingHr', 'hrvMs', 'providerReadiness', 'temperatureDeviationC', 'steps'] as const) {
+          if (existing[field] === undefined && day[field] !== undefined) {
+            Object.assign(existing, { [field]: day[field] });
+          }
+        }
+      }
+    });
+
+    return {
+      index: {
+        schemaVersion: SCHEMA_VERSION,
+        profileId,
+        generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        activities: activities.sort((a, b) => b.startTime.localeCompare(a.startTime)),
+        wellness: [...wellnessByDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
+      },
+      activitySources,
+    };
+  };
+
+  return {
+    profileId,
+    async loadIndex() {
+      return (await snapshot()).index;
+    },
+    async loadActivity(id) {
+      const { activitySources } = await snapshot();
+      const source = activitySources.get(id);
+      if (!source) throw new ActivityNotFoundError(id);
+      return source.loadActivity(id);
+    },
+  };
+}
+
+interface LocalDatabase extends DBSchema {
+  activities: {
+    key: string;
+    value: Activity;
+  };
+}
+
+let localDatabase: Promise<IDBPDatabase<LocalDatabase>> | undefined;
+
+function getLocalDatabase(): Promise<IDBPDatabase<LocalDatabase>> {
+  if (!globalThis.indexedDB) throw new Error('IndexedDB is not available in this environment');
+  localDatabase ??= openDB<LocalDatabase>('pacelab-local-v1', 1, {
+    upgrade(db) {
+      db.createObjectStore('activities', { keyPath: 'id' });
+    },
+  });
+  return localDatabase.catch((error: unknown) => {
+    localDatabase = undefined;
+    throw error;
+  });
+}
+
+function toActivitySummary(activity: Activity): ActivitySummary {
+  const { samples: _samples, pauses: _pauses, laps: _laps, swimLengths: _swimLengths, ...summary } = activity;
+  return summary;
+}
+
+function isDuplicateActivity(a: Activity, b: Activity): boolean {
+  return isDuplicateSummary(a, b);
+}
+
+function isDuplicateSummary(a: ActivitySummary, b: ActivitySummary): boolean {
+  return a.sport === b.sport && Math.abs(Date.parse(a.startTime) - Date.parse(b.startTime)) <= 5000;
+}
+
+function dataUrl(baseUrl: string, ...parts: string[]): string {
+  return `${baseUrl.replace(/\/+$/, '')}/data/${parts.map(encodeURIComponent).join('/')}`;
+}
+
+function assertProfileId(profileId: string): void {
+  if (!/^[a-z0-9-]+$/.test(profileId)) throw new Error(`Invalid profile id: "${profileId}"`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseKeyInfo(value: unknown): KeyInfo {
+  if (
+    !isRecord(value) ||
+    value.v !== 1 ||
+    value.kdf !== 'PBKDF2-SHA256' ||
+    typeof value.iterations !== 'number' ||
+    !Number.isInteger(value.iterations) ||
+    value.iterations < 1 ||
+    typeof value.salt !== 'string'
+  ) {
+    throw new Error('Remote profile key info has an invalid shape');
+  }
+  return {
+    v: 1,
+    kdf: 'PBKDF2-SHA256',
+    iterations: value.iterations,
+    salt: value.salt,
+  };
 }
