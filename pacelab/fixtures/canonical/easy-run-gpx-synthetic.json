@@ -1,0 +1,37 @@
+{
+  "id": "file:91864e63e54d466b",
+  "schemaVersion": 1,
+  "sport": "running",
+  "subSport": "generic",
+  "name": "Synthetic GPX run",
+  "startTime": "2026-03-01T10:00:00Z",
+  "elapsedTimeS": 10,
+  "movingTimeS": 10,
+  "hasGps": true,
+  "channels": ["heartRate", "altitude", "lat", "lon", "cadence"],
+  "source": {
+    "provider": "file",
+    "format": "gpx",
+    "importedAt": "2026-03-01T10:00:10Z"
+  },
+  "samples": {
+    "t": [0, 5, 10],
+    "channels": {
+      "heartRate": [100, 120, 130],
+      "altitude": [10, 11.5, 12],
+      "lat": [47, 47.0001, 47.0002],
+      "lon": [-122, -122, -122],
+      "cadence": [80, 82, 84]
+    }
+  },
+  "pauses": [],
+  "laps": [
+    {
+      "index": 0,
+      "startT": 0,
+      "endT": 10,
+      "movingTimeS": 10,
+      "trigger": "other"
+    }
+  ]
+}

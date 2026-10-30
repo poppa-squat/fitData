@@ -25,6 +25,7 @@ import {
   type SessionMesg,
 } from '@garmin/fitsdk';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 
 export * from './crypto.js';
 import { decryptJson, deriveKey } from './crypto.js';
@@ -63,11 +64,13 @@ export interface ImportOptions {
  */
 export async function importActivityFile(bytes: Uint8Array, fileName: string, opts?: ImportOptions): Promise<Activity> {
   const format = detectFormat(fileName, bytes);
-  if (format !== 'fit') {
-    throw new UnsupportedFileError(format ? `The ${format.toUpperCase()} importer is not available yet` : `Unsupported activity file: ${fileName}`);
-  }
+  if (!format) throw new UnsupportedFileError(`Unsupported activity file: ${fileName}`);
 
   try {
+    if (format !== 'fit') {
+      return await importXmlActivity(format, bytes, opts?.importedAt ?? new Date().toISOString());
+    }
+
     const stream = Stream.fromByteArray(Array.from(bytes));
     const decoder = new Decoder(stream);
     if (!decoder.isFIT() || !decoder.checkIntegrity()) {
@@ -324,6 +327,367 @@ async function convertFitMessages(messages: FitMessages, bytes: Uint8Array, impo
     if (calories !== undefined) result.calories = calories;
     if (poolLength !== undefined) result.poolLengthM = poolLength;
     if (swimLengths.length > 0) result.swimLengths = swimLengths;
+    return result;
+}
+
+interface XmlSample {
+    timestampMs: number;
+    heartRate?: number;
+    speed?: number;
+    distance?: number;
+    altitude?: number;
+    lat?: number;
+    lon?: number;
+    cadence?: number;
+    power?: number;
+}
+
+function xmlRecord(value: unknown): Record<string, unknown> | undefined {
+    return isRecord(value) ? value : undefined;
+}
+
+function xmlChild(value: unknown, name: string): unknown {
+    const record = xmlRecord(value);
+    if (!record) return undefined;
+    if (Object.hasOwn(record, name)) return record[name];
+    const key = Object.keys(record).find((candidate) => candidate.split(':').at(-1) === name);
+    return key === undefined ? undefined : record[key];
+}
+
+function xmlArray(value: unknown): unknown[] {
+    if (value === undefined || value === null) return [];
+    return Array.isArray(value) ? value : [value];
+}
+
+function xmlText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number') return String(value);
+    return xmlText(xmlChild(value, '#text'));
+}
+
+function xmlNumber(value: unknown): number | undefined {
+    const text = xmlText(value);
+    if (text === undefined || text === '') return undefined;
+    const number = Number(text);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+function xmlTime(value: unknown): number | undefined {
+    const text = xmlText(value);
+    if (!text) return undefined;
+    const timestamp = Date.parse(text);
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function parseActivityXml(bytes: Uint8Array, format: ImportFormat): Record<string, unknown> {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const validation = XMLValidator.validate(text);
+    if (validation !== true) {
+      throw new UnsupportedFileError(
+        `Invalid ${format.toUpperCase()} XML at line ${validation.err.line}: ${validation.err.msg}`,
+      );
+    }
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      parseAttributeValue: false,
+      parseTagValue: false,
+      trimValues: true,
+      removeNSPrefix: false,
+    });
+    const parsed: unknown = parser.parse(text);
+    const rootName = format === 'gpx' ? 'gpx' : 'TrainingCenterDatabase';
+    const root = xmlRecord(xmlChild(parsed, rootName));
+    if (!root) throw new UnsupportedFileError(`The XML document does not contain a ${rootName} root element`);
+    return root;
+}
+
+function sportFromXml(value: unknown): Activity['sport'] {
+    const sport = (xmlText(value) ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (sport === 'running' || sport === 'run') return 'running';
+    if (sport === 'cycling' || sport === 'biking' || sport === 'bike') return 'cycling';
+    if (sport === 'swimming' || sport === 'swim') return 'swimming';
+    if (sport === 'walking' || sport === 'walk') return 'walking';
+    if (sport === 'hiking' || sport === 'hike') return 'hiking';
+    return 'other';
+}
+
+function canonicalSamples(
+    samples: XmlSample[],
+    startTimeMs: number,
+    sport: Activity['sport'],
+): Activity['samples'] {
+    const times: number[] = [];
+    const columns: Record<RawChannelKey, (number | null)[]> = {
+      heartRate: [],
+      speed: [],
+      distance: [],
+      altitude: [],
+      lat: [],
+      lon: [],
+      cadence: [],
+      power: [],
+      temperature: [],
+      respirationRate: [],
+      stepLength: [],
+      verticalOscillation: [],
+      groundContactTime: [],
+      verticalRatio: [],
+      gctBalance: [],
+    };
+    let lastTimeMs: number | undefined;
+    for (const sample of [...samples].sort((a, b) => a.timestampMs - b.timestampMs)) {
+      if (lastTimeMs !== undefined && sample.timestampMs <= lastTimeMs) continue;
+      lastTimeMs = sample.timestampMs;
+      times.push(round((sample.timestampMs - startTimeMs) / 1000) ?? 0);
+      const values: Record<RawChannelKey, number | undefined> = {
+        heartRate: sample.heartRate,
+        speed: sample.speed,
+        distance: sample.distance,
+        altitude: sample.altitude,
+        lat: sample.lat,
+        lon: sample.lon,
+        cadence: sample.cadence,
+        power: sample.power,
+        temperature: undefined,
+        respirationRate: undefined,
+        stepLength: undefined,
+        verticalOscillation: undefined,
+        groundContactTime: undefined,
+        verticalRatio: undefined,
+        gctBalance: undefined,
+      };
+      if (sport === 'running' || sport === 'walking' || sport === 'hiking') {
+        if (values.cadence !== undefined) values.cadence = round(values.cadence);
+      }
+      for (const key of RAW_CHANNEL_KEYS) columns[key].push(values[key] ?? null);
+    }
+
+    const channels: Partial<Record<RawChannelKey, (number | null)[]>> = {};
+    for (const key of RAW_CHANNEL_KEYS) {
+      if (columns[key].some((value) => value !== null)) channels[key] = columns[key];
+    }
+    return { t: times, channels };
+}
+
+async function fileActivityId(bytes: Uint8Array): Promise<string> {
+    const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes as BufferSource));
+    return `file:${Array.from(digest.subarray(0, 8))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')}`;
+}
+
+function canonicalStartTime(timestampMs: number): string {
+    return new Date(Math.floor(timestampMs / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
+function importedAt(value: string): string {
+    return value.replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function importXmlActivity(format: 'gpx' | 'tcx', bytes: Uint8Array, importedAtValue: string): Promise<Activity> {
+    const root = parseActivityXml(bytes, format);
+    return format === 'gpx'
+      ? importGpxActivity(root, bytes, importedAtValue)
+      : importTcxActivity(root, bytes, importedAtValue);
+}
+
+async function importGpxActivity(root: Record<string, unknown>, bytes: Uint8Array, importedAtValue: string): Promise<Activity> {
+    const tracks = xmlArray(xmlChild(root, 'trk')).map(xmlRecord).filter((track): track is Record<string, unknown> => !!track);
+    const segments = tracks.flatMap((track) =>
+      xmlArray(xmlChild(track, 'trkseg')).map(xmlRecord).filter((segment): segment is Record<string, unknown> => !!segment),
+    );
+    const segmentSamples = segments.map((segment) =>
+      xmlArray(xmlChild(segment, 'trkpt'))
+        .map(xmlRecord)
+        .filter((point): point is Record<string, unknown> => !!point)
+        .flatMap((point) => {
+          const timestampMs = xmlTime(xmlChild(point, 'time'));
+          if (timestampMs === undefined) return [];
+          const extensions = xmlChild(point, 'extensions');
+          const trackExtension = xmlChild(extensions, 'TrackPointExtension');
+          const lat = xmlNumber(xmlChild(point, '@_lat'));
+          const lon = xmlNumber(xmlChild(point, '@_lon'));
+          const sample: XmlSample = { timestampMs };
+          const heartRate = xmlNumber(xmlChild(trackExtension, 'hr'));
+          const cadence = xmlNumber(xmlChild(trackExtension, 'cad'));
+          const altitude = xmlNumber(xmlChild(point, 'ele'));
+          if (lat !== undefined) sample.lat = lat;
+          if (lon !== undefined) sample.lon = lon;
+          if (heartRate !== undefined) sample.heartRate = heartRate;
+          if (cadence !== undefined) sample.cadence = cadence;
+          if (altitude !== undefined) sample.altitude = altitude;
+          return [sample];
+        }),
+    );
+    const samples = segmentSamples.flat();
+    if (samples.length === 0) throw new UnsupportedFileError('GPX file contains no timestamped track points');
+
+    const firstTimeMs = Math.min(...samples.map((sample) => sample.timestampMs));
+    const lastTimeMs = Math.max(...samples.map((sample) => sample.timestampMs));
+    const startTime = canonicalStartTime(firstTimeMs);
+    const startTimeMs = Date.parse(startTime);
+    const sport = sportFromXml(tracks.map((track) => xmlChild(track, 'type')).find((type) => type !== undefined));
+    const channels = canonicalSamples(samples, startTimeMs, sport);
+    const laps = segmentSamples.flatMap((segment, index) => {
+      if (segment.length === 0) return [];
+      const segmentStart = Math.min(...segment.map((sample) => sample.timestampMs));
+      const segmentEnd = Math.max(...segment.map((sample) => sample.timestampMs));
+      return [
+        {
+          index,
+          startT: round((segmentStart - startTimeMs) / 1000) ?? 0,
+          endT: round((segmentEnd - startTimeMs) / 1000) ?? 0,
+          movingTimeS: round((segmentEnd - segmentStart) / 1000) ?? 0,
+          trigger: 'other' as const,
+        },
+      ];
+    });
+    const name = xmlText(tracks.map((track) => xmlChild(track, 'name')).find((value) => value !== undefined));
+    const result: Activity = {
+      id: await fileActivityId(bytes),
+      schemaVersion: SCHEMA_VERSION,
+      sport,
+      subSport: 'generic',
+      startTime,
+      elapsedTimeS: round((lastTimeMs - firstTimeMs) / 1000) ?? 0,
+      movingTimeS: round((lastTimeMs - firstTimeMs) / 1000) ?? 0,
+      hasGps: Boolean(channels.channels.lat?.some((value) => value !== null)),
+      channels: RAW_CHANNEL_KEYS.filter((key) => channels.channels[key] !== undefined),
+      source: { provider: 'file', format: 'gpx', importedAt: importedAt(importedAtValue) },
+      samples: channels,
+      pauses: [],
+      laps,
+    };
+    if (name) result.name = name;
+    return result;
+}
+
+async function importTcxActivity(root: Record<string, unknown>, bytes: Uint8Array, importedAtValue: string): Promise<Activity> {
+    const activities = xmlArray(xmlChild(xmlChild(root, 'Activities'), 'Activity')).map(xmlRecord);
+    const activity = activities.find((value): value is Record<string, unknown> => !!value);
+    if (!activity) throw new UnsupportedFileError('TCX file contains no activity');
+    const sport = sportFromXml(xmlChild(activity, '@_Sport'));
+    const rawLaps = xmlArray(xmlChild(activity, 'Lap')).map(xmlRecord);
+    const lapRecords = rawLaps.filter((lap): lap is Record<string, unknown> => !!lap);
+    const lapPoints = lapRecords.map((lap) =>
+      xmlArray(xmlChild(xmlChild(lap, 'Track'), 'Trackpoint'))
+        .map(xmlRecord)
+        .filter((point): point is Record<string, unknown> => !!point),
+    );
+    const samples = lapPoints.flatMap((points) =>
+      points.flatMap((point) => {
+        const timestampMs = xmlTime(xmlChild(point, 'Time'));
+        if (timestampMs === undefined) return [];
+        const position = xmlChild(point, 'Position');
+        const heartRate = xmlNumber(xmlChild(xmlChild(point, 'HeartRateBpm'), 'Value'));
+        const distance = xmlNumber(xmlChild(point, 'DistanceMeters'));
+        const altitude = xmlNumber(xmlChild(point, 'AltitudeMeters'));
+        const extension = xmlChild(xmlChild(point, 'Extensions'), 'TPX');
+        const speed = xmlNumber(xmlChild(extension, 'Speed'));
+        const runCadence = xmlNumber(xmlChild(extension, 'RunCadence'));
+        const cadence = runCadence === undefined ? xmlNumber(xmlChild(point, 'Cadence')) : runCadence * 2;
+        const power = xmlNumber(xmlChild(extension, 'Watts'));
+        const sample: XmlSample = { timestampMs };
+        const lat = xmlNumber(xmlChild(position, 'LatitudeDegrees'));
+        const lon = xmlNumber(xmlChild(position, 'LongitudeDegrees'));
+        if (lat !== undefined) sample.lat = lat;
+        if (lon !== undefined) sample.lon = lon;
+        if (heartRate !== undefined) sample.heartRate = heartRate;
+        if (distance !== undefined) sample.distance = distance;
+        if (altitude !== undefined) sample.altitude = altitude;
+        if (speed !== undefined) sample.speed = speed;
+        if (cadence !== undefined) sample.cadence = cadence;
+        if (power !== undefined) sample.power = power;
+        return [sample];
+      }),
+    );
+
+    const activityIdTime = xmlTime(xmlChild(activity, 'Id'));
+    const firstSampleTime = samples.length ? Math.min(...samples.map((sample) => sample.timestampMs)) : undefined;
+    const firstLapTime = lapRecords
+      .map((lap) => xmlTime(xmlChild(lap, '@_StartTime')))
+      .filter((timestamp): timestamp is number => timestamp !== undefined)
+      .sort((a, b) => a - b)[0];
+    const startTimeMs = activityIdTime ?? firstSampleTime ?? firstLapTime;
+    if (startTimeMs === undefined) throw new UnsupportedFileError('TCX file contains no valid activity start time');
+    const startTime = canonicalStartTime(startTimeMs);
+    const canonicalStartMs = Date.parse(startTime);
+    const channels = canonicalSamples(samples, canonicalStartMs, sport);
+    const laps = lapRecords
+      .map((lap, index) => {
+        const points = lapPoints[index] ?? [];
+        const lapStartMs =
+          xmlTime(xmlChild(lap, '@_StartTime')) ??
+          (points.length
+            ? Math.min(...points.map((point) => xmlTime(xmlChild(point, 'Time')) ?? canonicalStartMs))
+            : canonicalStartMs);
+        const totalTimeS = xmlNumber(xmlChild(lap, 'TotalTimeSeconds'));
+        const pointTimes = points
+          .map((point) => xmlTime(xmlChild(point, 'Time')))
+          .filter((timestamp): timestamp is number => timestamp !== undefined);
+        const duration =
+          totalTimeS ?? (pointTimes.length > 0 ? (Math.max(...pointTimes) - Math.min(...pointTimes)) / 1000 : 0);
+        const result: Activity['laps'][number] = {
+          index,
+          startT: round((lapStartMs - canonicalStartMs) / 1000) ?? 0,
+          endT: round((lapStartMs - canonicalStartMs) / 1000 + duration) ?? 0,
+          movingTimeS: round(duration) ?? 0,
+          trigger: 'other',
+        };
+        const distance = xmlNumber(xmlChild(lap, 'DistanceMeters'));
+        const avgHr = xmlNumber(xmlChild(xmlChild(lap, 'AverageHeartRateBpm'), 'Value'));
+        const maxHr = xmlNumber(xmlChild(xmlChild(lap, 'MaximumHeartRateBpm'), 'Value'));
+        if (distance !== undefined) result.distanceM = distance;
+        if (avgHr !== undefined) result.avgHr = avgHr;
+        if (maxHr !== undefined) result.maxHr = maxHr;
+        return result;
+      })
+      .sort((a, b) => a.startT - b.startT)
+      .map((lap, index) => ({ ...lap, index }));
+
+    const pointEnd = samples.length ? Math.max(...samples.map((sample) => sample.timestampMs)) : canonicalStartMs;
+    const elapsedEnd = laps.reduce((end, lap) => Math.max(end, canonicalStartMs + lap.endT * 1000), pointEnd);
+    const elapsedTimeS = round((elapsedEnd - canonicalStartMs) / 1000) ?? 0;
+    const movingTimeS = round(laps.reduce((total, lap) => total + lap.movingTimeS, 0)) ?? elapsedTimeS;
+    const lapDistances = laps.flatMap((lap) => (lap.distanceM === undefined ? [] : [lap.distanceM]));
+    const summaryDistance =
+      lapDistances.length > 0
+        ? round(lapDistances.reduce((total, value) => total + value, 0), 2)
+        : round(samples.reduce((last, sample) => Math.max(last, sample.distance ?? 0), 0), 2);
+    const averageHeartRates = laps.flatMap((lap) => (lap.avgHr === undefined ? [] : [lap.avgHr]));
+    const totalLapTime = laps.reduce((total, lap) => total + lap.movingTimeS, 0);
+    const avgHr =
+      averageHeartRates.length === 0
+        ? undefined
+        : round(
+            laps.reduce((total, lap) => total + (lap.avgHr ?? 0) * lap.movingTimeS, 0) /
+              (totalLapTime || averageHeartRates.length),
+          );
+    const maxHr = laps.reduce<number | undefined>(
+      (max, lap) => (lap.maxHr === undefined ? max : Math.max(max ?? lap.maxHr, lap.maxHr)),
+      undefined,
+    );
+    const result: Activity = {
+      id: await fileActivityId(bytes),
+      schemaVersion: SCHEMA_VERSION,
+      sport,
+      subSport: 'generic',
+      startTime,
+      elapsedTimeS,
+      movingTimeS,
+      hasGps: Boolean(channels.channels.lat?.some((value) => value !== null)),
+      channels: RAW_CHANNEL_KEYS.filter((key) => channels.channels[key] !== undefined),
+      source: { provider: 'file', format: 'tcx', importedAt: importedAt(importedAtValue) },
+      samples: channels,
+      pauses: [],
+      laps,
+    };
+    if (lapDistances.length > 0 || samples.some((sample) => sample.distance !== undefined)) {
+      result.distanceM = summaryDistance;
+    }
+    if (avgHr !== undefined) result.avgHr = avgHr;
+    if (maxHr !== undefined) result.maxHr = maxHr;
     return result;
 }
 

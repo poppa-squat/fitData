@@ -1,0 +1,45 @@
+{
+  "id": "file:5adec582bb1796f4",
+  "schemaVersion": 1,
+  "sport": "running",
+  "subSport": "generic",
+  "startTime": "2026-03-02T10:00:00Z",
+  "elapsedTimeS": 10,
+  "movingTimeS": 10,
+  "distanceM": 20,
+  "avgHr": 110,
+  "maxHr": 160,
+  "hasGps": true,
+  "channels": ["heartRate", "speed", "distance", "altitude", "lat", "lon", "cadence", "power"],
+  "source": {
+    "provider": "file",
+    "format": "tcx",
+    "importedAt": "2026-03-02T10:00:10Z"
+  },
+  "samples": {
+    "t": [0, 5, 10],
+    "channels": {
+      "heartRate": [100, 120, 130],
+      "speed": [2, 2.1, 2.2],
+      "distance": [0, 10, 20],
+      "altitude": [10, 11, 12],
+      "lat": [47, 47.0001, 47.0002],
+      "lon": [-122, -122, -122],
+      "cadence": [160, 162, 164],
+      "power": [200, 210, 220]
+    }
+  },
+  "pauses": [],
+  "laps": [
+    {
+      "index": 0,
+      "startT": 0,
+      "endT": 10,
+      "movingTimeS": 10,
+      "distanceM": 20,
+      "avgHr": 110,
+      "maxHr": 160,
+      "trigger": "other"
+    }
+  ]
+}

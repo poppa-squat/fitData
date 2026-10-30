@@ -9,6 +9,10 @@ Everything here is safe to publish. **Real files go in `fixtures/private/` (giti
 | `canonical/cycling-synthetic.json` | 60-min indoor ride, power + HR + cadence at 1 Hz, 3×5 min intervals, laps with intensities | Synthetic |
 | `canonical/swim-synthetic.json` | 800 m pool swim, 25 m pool, 4 strokes, idle lengths, one sample per length | Synthetic |
 | `canonical/index-synthetic.json` | `IndexPayload`: 39 activity summaries + 62 days of Oura-style wellness | Synthetic |
+| `gpx/easy-run.synthetic.gpx` | Two synthetic GPS track points with Garmin heart-rate/cadence extensions | Synthetic |
+| `tcx/easy-run.synthetic.tcx` | Synthetic running activity with one lap, two track points, heart rate, and cadence | Synthetic |
+| `canonical/easy-run-gpx-synthetic.json` | Expected canonical `Activity` for the GPX fixture | Synthetic |
+| `canonical/easy-run-tcx-synthetic.json` | Expected canonical `Activity` for the TCX fixture | Synthetic |
 | `crypto/keyinfo.json`, `crypto/vector.enc` | `swim-synthetic.json` encrypted by C# `BundleCrypto` (passphrase `correct horse battery staple`, 1000 iterations) | Test vector |
 | `crypto/vector-ts.enc` | Same plaintext encrypted by `packages/data/src/crypto.ts` | Test vector |
 
