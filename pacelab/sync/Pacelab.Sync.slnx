@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pacelab.Canonical/Pacelab.Canonical.csproj" />
+    <Project Path="src/Pacelab.Sync.Cli/Pacelab.Sync.Cli.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pacelab.local/schema/wellness.schema.json",
+  "title": "Pacelab DailyWellness (schemaVersion 1)",
+  "description": "Mirror of packages/schema/src/wellness.ts.",
+  "type": "object",
+  "required": ["date"],
+  "additionalProperties": false,
+  "properties": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "sleep": {
+      "type": "object",
+      "required": ["source", "bedtimeStart", "bedtimeEnd", "totalSleepS"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "bedtimeStart": { "$ref": "#/$defs/utc" },
+        "bedtimeEnd": { "$ref": "#/$defs/utc" },
+        "totalSleepS": { "type": "number", "minimum": 0 },
+        "deepS": { "type": "number", "minimum": 0 },
+        "remS": { "type": "number", "minimum": 0 },
+        "lightS": { "type": "number", "minimum": 0 },
+        "awakeS": { "type": "number", "minimum": 0 },
+        "latencyS": { "type": "number", "minimum": 0 },
+        "efficiencyPct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "avgHr": { "type": "number" },
+        "lowestHr": { "type": "number" },
+        "avgHrvMs": { "type": "number", "minimum": 0 },
+        "avgBreathRate": { "type": "number", "minimum": 0 },
+        "providerScore": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "restingHr": { "$ref": "#/$defs/metric" },
+    "hrvMs": { "$ref": "#/$defs/metric" },
+    "providerReadiness": { "$ref": "#/$defs/metric" },
+    "temperatureDeviationC": { "$ref": "#/$defs/metric" },
+    "steps": { "$ref": "#/$defs/metric" }
+  },
+  "$defs": {
+    "utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z$" },
+    "metric": {
+      "type": "object",
+      "required": ["value", "source"],
+      "additionalProperties": false,
+      "properties": { "value": { "type": "number" }, "source": { "type": "string", "minLength": 1 } }
+    }
+  }
+}

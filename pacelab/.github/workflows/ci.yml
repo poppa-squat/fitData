@@ -1,0 +1,66 @@
+# Shared CI. CONTRACT file — changes follow docs/CONTRACTS.md §8.
+# Every track branch must be green here before merging to main.
+name: CI
+
+on:
+  push:
+    branches: [main, 'track-*/**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: TypeScript (check, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+  dotnet:
+    name: C# (build, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: sync/global.json
+      - run: dotnet build sync --configuration Release
+      - run: dotnet test sync --configuration Release --no-build
+
+  fixtures:
+    name: Fixtures match the reference converter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install garmin-fit-sdk==21.218.0
+      - name: Regenerate canonical fixture from the sanitized FIT and diff
+        run: |
+          python3 -I fixtures/tools/fit_to_canonical.py fixtures/fit/easy-run.sanitized.fit \
+            --imported-at 2026-01-15T13:00:00Z > /tmp/easy-run.json
+          diff <(python3 -m json.tool --sort-keys fixtures/canonical/easy-run.json) <(python3 -m json.tool --sort-keys /tmp/easy-run.json)
+
+  privacy:
+    name: No personal data committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Only sanitized FIT files and encrypted data may be committed
+        run: |
+          bad=$(git ls-files | grep -Ei '\.(fit|gpx|tcx)$' | grep -v '^fixtures/fit/.*\.sanitized\.fit$' || true)
+          if [ -n "$bad" ]; then echo "Raw activity files committed:"; echo "$bad"; exit 1; fi
+          bad=$(git ls-files | grep -Ei '(^|/)(\.env|secrets?\.json|.*token.*\.json)$' || true)
+          if [ -n "$bad" ]; then echo "Possible secrets committed:"; echo "$bad"; exit 1; fi
+          if git ls-files | grep -q '^data/'; then echo "data/ belongs on the 'data' branch, not main"; exit 1; fi

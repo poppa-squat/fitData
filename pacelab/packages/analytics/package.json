@@ -1,0 +1,17 @@
+{
+  "name": "@pacelab/analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Track B: pure analysis functions (window stats, segmentation, relationships, load, readiness, suggestions).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pacelab/schema": "*"
+  }
+}

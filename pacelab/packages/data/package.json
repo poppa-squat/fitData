@@ -1,0 +1,17 @@
+{
+  "name": "@pacelab/data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Track A: browser-side importers (FIT/GPX/TCX), encrypted bundle reader, local store.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pacelab/schema": "*"
+  }
+}

@@ -1,0 +1,33 @@
+# deps / builds
+node_modules/
+.svelte-kit/
+build/
+dist/
+bin/
+obj/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# editors / OS
+.DS_Store
+.idea/
+.vs/
+*.swp
+
+# PERSONAL DATA — never commit (CI "privacy" job enforces this)
+fixtures/private/
+*.fit
+*.gpx
+*.tcx
+!fixtures/fit/*.sanitized.fit
+/data/
+.pacelab/
+out-data/
+
+# secrets
+.env
+.env.*
+!.env.example
+secrets.json
+*.token.json

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pacelab.local/schema/activity.schema.json",
+  "title": "Pacelab canonical Activity (schemaVersion 1)",
+  "description": "Mirror of packages/schema/src/activity.ts. Both the C# sync tool and the TS importers must produce JSON that validates against this.",
+  "type": "object",
+  "required": ["id", "schemaVersion", "sport", "subSport", "startTime", "elapsedTimeS", "movingTimeS", "hasGps", "channels", "source", "samples", "pauses", "laps"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z]+:[A-Za-z0-9._-]+$" },
+    "schemaVersion": { "const": 1 },
+    "sport": { "enum": ["running", "cycling", "swimming", "walking", "hiking", "other"] },
+    "subSport": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+    "name": { "type": "string" },
+    "startTime": { "$ref": "#/$defs/utc" },
+    "timezoneOffsetMin": { "type": "integer", "minimum": -840, "maximum": 840 },
+    "elapsedTimeS": { "type": "number", "minimum": 0 },
+    "movingTimeS": { "type": "number", "minimum": 0 },
+    "distanceM": { "type": "number", "minimum": 0 },
+    "avgHr": { "type": "number", "minimum": 20, "maximum": 260 },
+    "maxHr": { "type": "number", "minimum": 20, "maximum": 260 },
+    "ascentM": { "type": "number", "minimum": 0 },
+    "descentM": { "type": "number", "minimum": 0 },
+    "calories": { "type": "number", "minimum": 0 },
+    "poolLengthM": { "type": "number", "exclusiveMinimum": 0 },
+    "hasGps": { "type": "boolean" },
+    "channels": { "type": "array", "items": { "$ref": "#/$defs/rawChannelKey" }, "uniqueItems": true },
+    "source": {
+      "type": "object",
+      "required": ["provider", "format", "importedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "providerId": { "type": "string" },
+        "format": { "enum": ["fit", "gpx", "tcx", "json"] },
+        "device": { "type": "string" },
+        "importedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "samples": {
+      "type": "object",
+      "required": ["t", "channels"],
+      "additionalProperties": false,
+      "properties": {
+        "t": { "type": "array", "items": { "type": "number", "minimum": 0 } },
+        "channels": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/rawChannelKey" },
+          "additionalProperties": { "$ref": "#/$defs/series" }
+        },
+        "extra": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z]+\\.[A-Za-z0-9]+$" },
+          "additionalProperties": { "$ref": "#/$defs/series" }
+        }
+      }
+    },
+    "pauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["startT", "endT"],
+        "additionalProperties": false,
+        "properties": { "startT": { "type": "number", "minimum": 0 }, "endT": { "type": "number", "minimum": 0 } }
+      }
+    },
+    "laps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "startT", "endT", "movingTimeS", "trigger"],
+        "additionalProperties": false,
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "startT": { "type": "number", "minimum": 0 },
+          "endT": { "type": "number", "minimum": 0 },
+          "movingTimeS": { "type": "number", "minimum": 0 },
+          "distanceM": { "type": "number", "minimum": 0 },
+          "avgHr": { "type": "number" },
+          "maxHr": { "type": "number" },
+          "avgSpeed": { "type": "number", "minimum": 0 },
+          "trigger": { "enum": ["manual", "time", "distance", "position", "session_end", "other"] },
+          "intensity": { "enum": ["warmup", "active", "interval", "rest", "recovery", "cooldown", "other"] },
+          "workoutStepIndex": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "swimLengths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "startT", "endT", "stroke", "idle"],
+        "additionalProperties": false,
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "startT": { "type": "number", "minimum": 0 },
+          "endT": { "type": "number", "minimum": 0 },
+          "strokes": { "type": "integer", "minimum": 0 },
+          "stroke": { "enum": ["freestyle", "backstroke", "breaststroke", "butterfly", "drill", "mixed", "im", "unknown"] },
+          "idle": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z$" },
+    "series": { "type": "array", "items": { "type": ["number", "null"] } },
+    "rawChannelKey": {
+      "enum": ["heartRate", "speed", "distance", "altitude", "lat", "lon", "cadence", "power", "temperature", "respirationRate", "stepLength", "verticalOscillation", "groundContactTime", "verticalRatio", "gctBalance"]
+    }
+  }
+}
