@@ -24,26 +24,16 @@ import type {
   SegmentKind,
   Suggestion,
   SuggestionContext,
-  TimeWindow,
-  WindowStats,
 } from './types.js';
 
 export * from './types.js';
 export { prepare } from './prepare.js';
 export { smooth } from './smooth.js';
+export { windowStats } from './stats.js';
 
 const notImplemented = (name: string): never => {
   throw new Error(`@pacelab/analytics: ${name} not implemented yet (Track B)`);
 };
-
-/** Stats for every available channel (or just `channels`) inside the window. Must run in < 5 ms for a 2 h activity at 1 Hz. */
-export function windowStats(p: PreparedActivity, window: TimeWindow, settings: AthleteSettings, channels?: ChannelKey[]): WindowStats {
-  void p;
-  void window;
-  void settings;
-  void channels;
-  return notImplemented('windowStats');
-}
 
 /** Auto-segmentation. Unsupported kinds for the sport (e.g. swimLengths on a run) return []. */
 export function segments(p: PreparedActivity, kind: SegmentKind, settings: AthleteSettings): Segment[] {
