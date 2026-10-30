@@ -12,6 +12,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@garmin/fitsdk": "^21.218.0",
     "@pacelab/schema": "*"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
   }
 }
